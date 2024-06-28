@@ -31,10 +31,14 @@ You use Ligolo-ng for your penetration tests? Did it help you pass a certificati
   - [TLS Options](#tls-options)
     - [Using Let's Encrypt Autocert](#using-lets-encrypt-autocert)
     - [Using your own TLS certificates](#using-your-own-tls-certificates)
-    - [Automatic self-signed certificates (NOT RECOMMENDED)](#automatic-self-signed-certificates-not-recommended)
+    - [Automatic self-signed certificates](#automatic-self-signed-certificates)
   - [Using Ligolo-ng](#using-ligolo-ng)
+    - [Start the agent](#start-the-agent)
+    - [Start the tunneling](#start-the-tunneling)
+    - [Setup routing](#setup-routing)
   - [Agent Binding/Listening](#agent-bindinglistening)
   - [Access to agent's local ports (127.0.0.1)](#access-to-agents-local-ports-127001)
+  - [Agent as server (Bind)](#agent-as-server-bind)
 - [Demo](#demo)
 - [Does it require Administrator/root access ?](#does-it-require-administratorroot-access-)
 - [Supported protocols/packets](#supported-protocolspackets)
@@ -61,6 +65,7 @@ tunnels from a reverse TCP/TLS connection using a **tun interface** (without the
 - Socket listening/binding on the *agent*
 - Multiple platforms supported for the *agent*
 - Can handle multiple tunnels
+- Reverse/Bind Connection
 
 ## How is this different from Ligolo/Chisel/Meterpreter... ?
 
@@ -106,6 +111,14 @@ $ sudo ip tuntap add user [your_username] mode tun ligolo
 $ sudo ip link set ligolo up
 ```
 
+> On **Ligolo-ng >= v0.6**, you can now use the `interface_create` command to create a new interface! No need to use ip tuntap!
+
+```
+ligolo-ng » interface_create --name "evil-cha"
+INFO[3185] Creating a new "evil-cha" interface...       
+INFO[3185] Interface created!
+```
+
 #### Windows
 
 You need to download the [Wintun](https://www.wintun.net/) driver (used by [WireGuard](https://www.wireguard.com/)) and place the `wintun.dll` in the same folder as Ligolo (make sure you use the right architecture).
@@ -117,6 +130,7 @@ Start the *proxy* server on your Command and Control (C2) server (default port 1
 ```shell
 $ ./proxy -h # Help options
 $ ./proxy -autocert # Automatically request LetsEncrypt certificates
+$ ./proxy -selfcert # Use self-signed certificates
 ```
 
 ### TLS Options
@@ -131,15 +145,36 @@ When using the `-autocert` option, the proxy will automatically request a certif
 
 If you want to use your own certificates for the proxy server, you can use the `-certfile` and `-keyfile` parameters.
 
-#### Automatic self-signed certificates (NOT RECOMMENDED)
+#### Automatic self-signed certificates
 
 The *proxy/relay* can automatically generate self-signed TLS certificates using the `-selfcert` option.
 
-The `-ignore-cert` option needs to be used with the *agent*.
+***Validating self-signed certificates fingerprints (recommended)***
+
+When running selfcert, you can run the `certificate_fingerprint` command to print the currently used certificate fingerprint.
+
+```
+ligolo-ng » certificate_fingerprint 
+INFO[0203] TLS Certificate fingerprint for ligolo is: D005527D2683A8F2DB73022FBF23188E064493CFA17D6FCF257E14F4B692E0FC 
+```
+
+On the agent, you can then connect using the fingerprint provided by the Ligolo-ng proxy.
+
+```
+ligolo-agent -connect 127.0.0.1:11601 -v -accept-fingerprint D005527D2683A8F2DB73022FBF23188E064493CFA17D6FCF257E14F4B692E0FC                                               nchatelain@nworkstation
+INFO[0000] Connection established                        addr="127.0.0.1:11601"
+```
+
+> By default, the "ligolo" domain name is used for TLS Certificate generation. You can change the domain by using the -selfcert-domain [domain] option at startup.
+
+***Ignoring all certificate verification (for lab/debugging)***
+
+To ignore all security mechanisms, the `-ignore-cert` option can be used with the *agent*.
 
 > Beware of man-in-the-middle attacks! This option should only be used in a test environment or for debugging purposes.
 ### Using Ligolo-ng
 
+#### Start the agent
 
 Start the *agent* on your target (victim) computer (no privileges are required!):
 
@@ -162,7 +197,19 @@ ligolo-ng » session
 ? Specify a session : 1 - nchatelain@nworkstation - XX.XX.XX.XX:38000
 ```
 
-Display the network configuration of the agent using the `ifconfig` command:
+#### Start the tunneling
+
+Start the tunnel on the proxy, using the `evil-cha` interface name.
+
+```
+[Agent : nchatelain@nworkstation] » tunnel_start --tun evil-cha
+[Agent : nchatelain@nworkstation] » INFO[0690] Starting tunnel to nchatelain@nworkstation   
+```
+> On macOS, you need to specify a utun[0-9] device, like utun4.
+
+#### Setup routing
+
+First, display the network configuration of the agent using the `ifconfig` command:
 
 ```
 [Agent : nchatelain@nworkstation] » ifconfig 
@@ -178,14 +225,21 @@ Display the network configuration of the agent using the `ifconfig` command:
 └──────────────┴──────────────────────────────┘
 ```
 
-Add a route on the *proxy/relay* server to the *192.168.0.0/24* *agent* network.
+Then setup routes accordingly.
 
-*Linux*:
+**Linux**:
+
+*Using the terminal:*
 ```shell
 $ sudo ip route add 192.168.0.0/24 dev ligolo
 ```
+*Or using the Ligolo-ng (>= 0.6) cli:*
+```
+ligolo-ng » interface_add_route --name evil-cha --route 192.168.2.0/24
+INFO[3206] Route created.                               
+```
 
-*Windows*:
+**Windows**:
 ```
 > netsh int ipv4 show interfaces
 
@@ -196,20 +250,12 @@ Idx     Mét         MTU          État                Nom
 > route add 192.168.0.0 mask 255.255.255.0 0.0.0.0 if [THE INTERFACE IDX]
 ```
 
-Start the tunnel on the proxy:
+**macOS:**
 
 ```
-[Agent : nchatelain@nworkstation] » tunnel_start
-[Agent : nchatelain@nworkstation] » INFO[0690] Starting tunnel to nchatelain@nworkstation   
+$ sudo ifconfig utun4 alias [random_ip] 255.255.255.0
+$ sudo route add -net 192.168.2.0/24 interface utun4
 ```
-
-You can also specify a custom tuntap interface using the ``--tun iface`` option:
-
-```
-[Agent : nchatelain@nworkstation] » tunnel_start --tun mycustomtuntap
-[Agent : nchatelain@nworkstation] » INFO[0690] Starting tunnel to nchatelain@nworkstation   
-```
-
 
 You can now access the *192.168.0.0/24* *agent* network from the *proxy* server.
 
@@ -260,8 +306,8 @@ INFO[1505] Listener closed.
 
 ### Access to agent's local ports (127.0.0.1)
 
-If you need to access the local ports of the currently connected agent, there's a "magic" IP hardcoded in Ligolo-ng: *240.0.0.1* ( This IP address is part of an unused IPv4 subnet).
-If you query this IP address, Ligolo-ng will automatically redirect traffic to the agent's local IP address (127.0.0.1).
+If you need to access the local ports of the currently connected agent, there's a "magic" CIDR hardcoded in Ligolo-ng: *240.0.0.0/4* (This is an unused IPv4 subnet).
+If you query an IP address on this subnet, Ligolo-ng will automatically redirect traffic to the agent's local IP address (127.0.0.1).
 
 Example:
 
@@ -281,11 +327,34 @@ Service detection performed. Please report any incorrect results at https://nmap
 Nmap done: 1 IP address (1 host up) scanned in 7.16 seconds
 ```
 
+### Agent as server (Bind)
+
+The Ligolo-ng agent can operate using a bind connection (i.e. acting as a server).
+
+Instead of using the `--connect [ip:port]` argument, you can use `--bind [ip:port]` so the agent start listening to connections.
+
+After that, the proxy can connect to the agent using the `connect_agent` command.
+
+In a terminal:
+```
+» ligolo-agent -bind 127.0.0.1:4444                                                                                                                                                                   
+WARN[0000] TLS Certificate fingerprint is: 05518ABE4F0D3B137A2365E0DE52A01FE052EE4C5A2FD12D8E2DD93AED1DD04B 
+INFO[0000] Listening on 127.0.0.1:4444...               
+INFO[0005] Got connection from: 127.0.0.1:53908         
+INFO[0005] Connection established                        addr="127.0.0.1:53908"
+```
+
+In ligolo-ng proxy:
+
+```
+ligolo-ng » connect_agent --ip 127.0.0.1:4444
+? TLS Certificate Fingerprint is: 05518ABE4F0D3B137A2365E0DE52A01FE052EE4C5A2FD12D8E2DD93AED1DD04B, connect? Yes
+INFO[0021] Agent connected.                              name=nchatelain@nworkstation remote="127.0.0.1:4444"
+```
+
 ## Demo
 
-
-https://user-images.githubusercontent.com/31402213/127328691-e063e3f2-dbd9-43c6-bd12-08065a6d260f.mp4
-
+[Ligolo-ng-demo.webm](https://github.com/nicocha30/ligolo-ng/assets/31402213/3070bb7c-0b0d-4c77-9181-cff74fb2f0ba)
 
 ## Does it require Administrator/root access ?
 
